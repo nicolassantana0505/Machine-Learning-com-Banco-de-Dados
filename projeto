@@ -7,9 +7,13 @@ from pymongo import MongoClient
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
-
 from sklearn.linear_model import LogisticRegression
-
+from sklearn.tree import DecisionTreeClassifier, export_text
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
 from sklearn.metrics import accuracy_score, confusion_matrix
 
 
@@ -57,10 +61,27 @@ df = pd.get_dummies(
 # TRANSFORMAR "SIM" E "NAO" EM 1 E 0
 # ==========================================
 
-df["vendeu_muito"] = df["vendeu_muito"].map({
-    "sim": 1,
-    "nao": 0
-})
+print(df["vendeu_muito"].unique())
+
+# ==========================================
+# TRANSFORMAR "SIM" E "NAO" EM 1 E 0
+# ==========================================
+
+df["vendeu_muito"] = (
+    df["vendeu_muito"]
+    .astype(str)          # garante que tudo é texto (cobre True/False)
+    .str.strip()          # tira espaços
+    .str.lower()          # tudo minúsculo
+    .map({
+        "sim": 1,
+        "nao": 0,
+        "não": 0,
+        "true": 1,
+        "false": 0
+    })
+)
+
+print(df["vendeu_muito"].value_counts(dropna=False))
 
 
 print("\nDados:")
@@ -99,58 +120,108 @@ X_treino, X_teste, y_treino, y_teste = train_test_split(
 
 
 # ==========================================
-# CRIAR MODELO
+# CRIAR MODELOS
 # ==========================================
 
-modelo = LogisticRegression()
+modelos = {
+
+    # Modelo original da aula
+   "Regressão Logística": make_pipeline(
+    StandardScaler(),
+    LogisticRegression()
+ ),
+
+    # Faz perguntas do tipo "preço > 200?" até decidir
+    # max_depth limita a profundidade (evita decorar os dados)
+    "Árvore de Decisão": DecisionTreeClassifier(
+        max_depth=3,
+        random_state=42
+    ),
+
+    # Várias árvores votando juntas
+    "Random Forest": RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        random_state=42
+    ),
+
+    # Olha os K produtos mais parecidos e vota
+    # Precisa de escala, pois usa distância entre os pontos
+    "KNN": make_pipeline(
+        StandardScaler(),
+        KNeighborsClassifier(n_neighbors=3)
+    )
+}
 
 
 # ==========================================
-# TREINAR MODELO
+# TREINAR, PREVER E MOSTRAR RESULTADOS
 # ==========================================
 
-modelo.fit(
-    X_treino,
-    y_treino
-)
+for nome_modelo, modelo in modelos.items():
 
-
-# ==========================================
-# FAZER PREVISÕES
-# ==========================================
-
-y_pred = modelo.predict(X_teste)
-
-
-# ==========================================
-# RESULTADOS
-# ==========================================
-
-print("\n========== RESULTADOS ==========")
-
-accuracy = accuracy_score(
-    y_teste,
-    y_pred
-)
-
-print("\nResultado das previsões:")
-
-for real, previsto in zip(y_teste, y_pred):
-    print(
-        f"Real: {real} | Previsto: {previsto}"
+    # Treina
+    modelo.fit(
+        X_treino,
+        y_treino
     )
 
-print("Accuracy:", accuracy)
+    # Faz previsões
+    y_pred = modelo.predict(X_teste)
 
+    print(f"\n========== RESULTADOS: {nome_modelo} ==========")
 
-print("\nMatriz de confusão:")
-
-print(
-    confusion_matrix(
+    accuracy = accuracy_score(
         y_teste,
         y_pred
     )
+
+    print("\nResultado das previsões:")
+
+    for real, previsto in zip(y_teste, y_pred):
+        print(
+            f"Real: {real} | Previsto: {previsto}"
+        )
+
+    print("Accuracy:", accuracy)
+
+    print("\nMatriz de confusão:")
+
+    print(
+        confusion_matrix(
+            y_teste,
+            y_pred
+        )
+    )
+
+
+# ==========================================
+# ÁRVORE DE DECISÃO: VENDO AS REGRAS
+# ==========================================
+
+print("\n========== REGRAS DA ÁRVORE ==========")
+
+print(
+    export_text(
+        modelos["Árvore de Decisão"],
+        feature_names=list(X.columns)
+    )
 )
+
+
+# ==========================================
+# RANDOM FOREST: IMPORTÂNCIA DAS COLUNAS
+# ==========================================
+
+print("\n========== IMPORTÂNCIA (RANDOM FOREST) ==========")
+
+importancias = pd.Series(
+    modelos["Random Forest"].feature_importances_,
+    index=X.columns
+).sort_values(ascending=False)
+
+print(importancias)
+
 
 #================================
 #     Novo Produto
@@ -162,8 +233,55 @@ novo_produto = pd.DataFrame({
     "categoria_Informática": [True]
 })
 
-previsao = modelo.predict(novo_produto)
+# Garante que o novo produto tenha as mesmas colunas do treino
+# (as categorias que não aparecem ficam com 0)
+novo_produto = novo_produto.reindex(
+    columns=X.columns,
+    fill_value=0
+)
 
-resultado = "Sim" if previsao[0] == 1 else "Não"
+print("\n========== NOVO PRODUTO ==========")
 
-print(f"Vendeu muito? {resultado}")
+for nome_modelo, modelo in modelos.items():
+
+    previsao = modelo.predict(novo_produto)
+
+    resultado = "Sim" if previsao[0] == 1 else "Não"
+
+    print(f"{nome_modelo} -> Vendeu muito? {resultado}")
+
+
+# ==========================================
+# K-MEANS (APRENDIZADO NÃO SUPERVISIONADO)
+# ==========================================
+# Aqui NÃO usamos o y (vendeu_muito).
+# O K-Means procura grupos de produtos parecidos sozinho.
+
+escala = StandardScaler()
+
+X_escalado = escala.fit_transform(X)
+
+kmeans = KMeans(
+    n_clusters=3,
+    random_state=42,
+    n_init=10
+)
+
+df["grupo"] = kmeans.fit_predict(X_escalado)
+
+print("\n========== K-MEANS ==========")
+
+print("\nProdutos por grupo:")
+print(df["grupo"].value_counts())
+
+print("\nMédia de cada grupo:")
+print(
+    df.groupby("grupo")[["preco", "estoque", "vendeu_muito"]].mean()
+)
+
+# Em qual grupo o novo produto cairia?
+grupo_novo = kmeans.predict(
+    escala.transform(novo_produto)
+)
+
+print(f"\nO novo produto pertence ao grupo: {grupo_novo[0]}")
